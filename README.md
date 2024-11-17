@@ -1,1 +1,1 @@
-# trinh-duyet-python
+Co the viet ma python trong trinh duyet
