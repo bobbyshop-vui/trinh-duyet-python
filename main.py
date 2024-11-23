@@ -1,12 +1,14 @@
 import sys
 import traceback
+import requests
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from threading import Thread
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QVBoxLayout, QWidget, QLineEdit, QPushButton, QHBoxLayout, QTabWidget
-)
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QLineEdit, QPushButton, QHBoxLayout, QTabWidget
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtCore import QUrl
+import io
+from contextlib import redirect_stdout
+import os
 
 # Định nghĩa máy chủ HTTP
 class CustomHTTPRequestHandler(SimpleHTTPRequestHandler):
@@ -18,8 +20,10 @@ class CustomHTTPRequestHandler(SimpleHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(bytes(self.get_html_code(), 'utf-8'))
+        elif self.path == '/favicon.ico':
+            self.send_error(404)  # Xử lý yêu cầu favicon.ico để tránh lỗi 404
         else:
-            self.send_error(404)
+            super().do_GET()  # Dùng phương thức mặc định để xử lý các tài nguyên khác
 
     def get_html_code(self):
         self.current_html = """
@@ -46,7 +50,9 @@ print("Hello:", hellol)
         </body>
         </html>
         """
+        # Trả về kết quả thực thi Python thay vì chỉ trả về HTML nguyên bản
         return check_and_execute_python(self.current_html)
+
 
 # Hàm kiểm tra và thực thi mã Python trong thẻ <python>
 def check_and_execute_python(html_content):
@@ -54,24 +60,24 @@ def check_and_execute_python(html_content):
     code_end = html_content.find('</python>', code_start)
 
     if code_start == -1 or code_end == -1:
-        return html_content  # Không tìm thấy thẻ <python>, trả về nguyên văn
+        return html_content  # Không có thẻ <python>, trả về nguyên bản HTML
 
     python_code = html_content[code_start:code_end].strip()
 
     result_output = ""
     try:
-        import io
-        from contextlib import redirect_stdout
-
+        # Thực thi mã Python và lưu kết quả đầu ra
         f = io.StringIO()
         with redirect_stdout(f):
             exec(python_code)  # Thực thi mã Python
 
-        result_output = f.getvalue()
+        result_output = f.getvalue()  # Kết quả thực thi mã Python
+        print(f"Python Output: {result_output}")  # In ra kết quả thực thi Python
 
     except Exception as e:
         result_output = traceback.format_exc()
 
+    # Thay thế phần mã Python trong HTML bằng kết quả thực thi
     html_content = html_content.replace('<python>', '').replace('</python>', '').replace(python_code, result_output)
 
     return html_content
@@ -82,6 +88,7 @@ def run_http_server():
     httpd = HTTPServer(server_address, CustomHTTPRequestHandler)
     print("Serving on http://localhost:8000")
     httpd.serve_forever()
+
 
 # Định nghĩa lớp Browser
 class Browser(QMainWindow):
@@ -155,7 +162,6 @@ class Browser(QMainWindow):
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
 
-    # Phương thức thêm tab mới
     def add_new_tab(self):
         # Tạo một QWebEngineView mới
         browser_view = QWebEngineView()
@@ -171,15 +177,35 @@ class Browser(QMainWindow):
 
     def navigate_to_url(self):
         url = self.url_bar.text().strip()
+
+        # Kiểm tra nếu URL không có http:// hoặc https://, thêm vào
         if not url.startswith("http://") and not url.startswith("https://"):
             url = "http://" + url  # Thêm http:// nếu không có
 
-        current_browser = self.tabs.currentWidget()  # Lấy tab hiện tại
-        if isinstance(current_browser, QWebEngineView):
-            current_browser.setUrl(QUrl(url))  # Điều hướng đến URL trong tab hiện tại
+        print(f"Navigating to: {url}")
 
-            # Kiểm tra nếu URL đã thay đổi
-            print(f"Navigating to: {url}")
+        try:
+            # Sử dụng requests để lấy HTML từ URL
+            response = requests.get(url)
+            if response.status_code == 200:
+                html = response.text  # Lấy HTML từ URL
+
+                # Kiểm tra và thực thi mã Python trong thẻ <python> của mã HTML
+                html_with_python_executed = self.check_and_execute_python(html)
+
+                # Hiển thị mã HTML đã thay đổi trong QWebEngineView
+                current_browser = self.tabs.currentWidget()  # Lấy tab hiện tại
+                if isinstance(current_browser, QWebEngineView):
+                    current_browser.setHtml(html_with_python_executed)  # Cập nhật trang với mã đã thực thi
+            else:
+                print("Error: Unable to fetch the page")
+        except requests.exceptions.RequestException as e:
+            print(f"Error: {e}")
+
+    def check_and_execute_python(self, html):
+        # Lấy HTML từ URL và thực thi mã Python
+        html_with_python_executed = check_and_execute_python(html)
+        return html_with_python_executed
 
     def clear_cache(self):
         current_browser = self.tabs.currentWidget()  # Lấy tab hiện tại
@@ -204,15 +230,14 @@ class Browser(QMainWindow):
                 current_browser.setUrl(QUrl(parent_url))  # Điều hướng lên trang cha
                 print(f"Going up to: {parent_url}")
 
+
 if __name__ == "__main__":
     # Chạy máy chủ HTTP trong một luồng riêng
     http_server_thread = Thread(target=run_http_server)
-    http_server_thread.daemon = True
     http_server_thread.start()
 
-    # Chạy ứng dụng PyQt
+    # Khởi tạo ứng dụng PyQt và khởi chạy browser
     app = QApplication(sys.argv)
-    window = Browser()
-    window.show()
-
+    browser = Browser()
+    browser.show()
     sys.exit(app.exec_())
